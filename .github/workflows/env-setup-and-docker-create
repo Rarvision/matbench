@@ -14,22 +14,22 @@ on:
       system_dependencies:
         description: "Additional system dependencies to install"
         required: false  
-        type: string
         default: "git"
+        type: string
       conda_env_file:
-        description: "Optional Conda environment YAML file for setup"
+        description: "Optional Conda environment YAML file"
         required: false
         type: string
       pip_requirements_file:
-        description: "Optional pip requirements.txt file for setup"
+        description: "Optional pip requirements.txt file"
         required: false
         type: string
       custom_pip_lines:
-        description: "Optional custom pip install lines; each commands should be separated by semicolon"
+        description: "Optional custom pip install lines"
         required: false
         type: string
       dockerhub_repo:
-        description: "Docker Hub repository, e.g. username/my-image"
+        description: "Docker Hub repository (e.g. yourname/myimage)"
         required: true
         type: string
 
