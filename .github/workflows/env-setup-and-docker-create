@@ -1,7 +1,7 @@
 name: env-setup-and-docker-create
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
       model:
         description: "The model name"
