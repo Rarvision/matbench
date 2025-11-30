@@ -109,7 +109,7 @@ jobs:
             pip install matbench
           fi
 
-      - name: Run the importing test and export env
+      - name: Run the importing test and export env & packed env
         shell: bash -l {0}
         run: |
           set -Eeuo pipefail
@@ -137,51 +137,65 @@ jobs:
           # 运行导入测试
           python imports_only.py
           
-          # 导出 Conda 环境
+          # 导出 Conda 环境（完整 yml，仅做记录/参考）
           OUT="${{ inputs.model }}-${{ inputs.python_version }}.yml"
           conda env export -n "${{ inputs.model }}" --no-builds | sed '/^prefix: /d' > "$OUT"
           echo "Environment exported to: $OUT"
           ls -lh "$OUT"
 
-      - name: Upload exported env
+          # 安装 conda-pack 并打包整个环境，给 Docker 使用
+          echo "Installing conda-pack and packing environment..."
+          pip install conda-pack
+          PACKED="${{ inputs.model }}-env.tar.gz"
+          conda-pack -n "${{ inputs.model }}" -o "$PACKED"
+          echo "Packed environment to: $PACKED"
+          ls -lh "$PACKED"
+
+      - name: Upload exported env and packed env
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.model }}-${{ inputs.python_version }}-env
-          path: benchmarks/matbench_v0.1_${{ inputs.model }}/${{ inputs.model }}-${{ inputs.python_version }}.yml
+          path: |
+            benchmarks/matbench_v0.1_${{ inputs.model }}/${{ inputs.model }}-${{ inputs.python_version }}.yml
+            benchmarks/matbench_v0.1_${{ inputs.model }}/${{ inputs.model }}-env.tar.gz
           if-no-files-found: error
 
-      # === 从这里开始是 Docker 相关步骤（已改成导出镜像为 tar） ===
+      # === Docker 部分：使用 conda-pack 打好的 env.tar.gz 直接构建镜像 ===
 
       - name: Generate Dockerfile
         run: |
           set -Eeuo pipefail
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
 
-          # 拷贝导出的 env 文件为 env.yml（Docker 里使用这个名字）
-          cp "${{ inputs.model }}-${{ inputs.python_version }}.yml" env.yml
+          # 将打包好的环境重命名为固定名字，方便 Dockerfile 使用
+          cp "${{ inputs.model }}-env.tar.gz" env.tar.gz
 
           echo "Generating Dockerfile..."
           cat > Dockerfile << 'EOF'
           FROM continuumio/miniconda3
 
-          # 将环境文件拷贝进镜像
           WORKDIR /workspace
-          COPY env.yml /tmp/env.yml
 
-          # 基于 env.yml 创建 Conda 环境
-          RUN conda env create -f /tmp/env.yml && conda clean -afy
-
-          # 将环境加入 PATH，这里假设 env 名就是模型名；如果 env.yml 里写了别的 name，可以改成相应名字
-          ENV PATH=/opt/conda/envs/${MODEL_NAME}/bin:$PATH
+          # 拷贝打包好的 Conda 环境
+          COPY env.tar.gz /tmp/env.tar.gz
 
           # 拷贝代码
           COPY . /workspace
+
+          # 解包 Conda 环境并修复路径
+          RUN mkdir -p /opt/conda/envs/${MODEL_NAME} \
+              && tar -xzf /tmp/env.tar.gz -C /opt/conda/envs/${MODEL_NAME} \
+              && /opt/conda/envs/${MODEL_NAME}/bin/conda-unpack \
+              && rm /tmp/env.tar.gz
+
+          # 将环境加入 PATH
+          ENV PATH=/opt/conda/envs/${MODEL_NAME}/bin:$PATH
 
           # 默认启动 bash，你可以按需要改成运行某个脚本
           CMD ["bash"]
           EOF
 
-          # 用 sed 把占位符 MODEL_NAME 替换成真实的 model 名
+          # 替换占位符为真实的 model 名
           sed -i "s/\${MODEL_NAME}/${{ inputs.model }}/g" Dockerfile
 
           echo "Dockerfile generated:"
@@ -192,18 +206,20 @@ jobs:
           set -Eeuo pipefail
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
 
-          # Docker tag must be lowercase
+          # Docker tag 必须是小写
           IMAGE_TAG=$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')
           echo "Building Docker image: $IMAGE_TAG"
 
           docker build -t "$IMAGE_TAG" .
+
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
       - name: Save Docker image to tar
         run: |
           set -Eeuo pipefail
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
 
-          IMAGE_TAG=$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_TAG=${IMAGE_TAG:-$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')}
           OUT="${IMAGE_TAG}.tar"
 
           echo "Saving Docker image $IMAGE_TAG to $OUT"
@@ -216,4 +232,3 @@ jobs:
           name: docker-image-${{ inputs.model }}-py${{ inputs.python_version }}
           path: benchmarks/matbench_v0.1_${{ inputs.model }}/$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]').tar
           if-no-files-found: error
-
