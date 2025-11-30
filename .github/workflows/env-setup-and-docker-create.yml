@@ -192,8 +192,10 @@ jobs:
           set -Eeuo pipefail
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
 
-          IMAGE_TAG=${{ inputs.model }}-py${{ inputs.python_version }}
+          # Docker tag must be lowercase
+          IMAGE_TAG=$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')
           echo "Building Docker image: $IMAGE_TAG"
+
           docker build -t "$IMAGE_TAG" .
 
       - name: Save Docker image to tar
@@ -201,7 +203,7 @@ jobs:
           set -Eeuo pipefail
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
 
-          IMAGE_TAG=${{ inputs.model }}-py${{ inputs.python_version }}
+          IMAGE_TAG=$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')
           OUT="${IMAGE_TAG}.tar"
 
           echo "Saving Docker image $IMAGE_TAG to $OUT"
@@ -212,5 +214,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: docker-image-${{ inputs.model }}-py${{ inputs.python_version }}
-          path: benchmarks/matbench_v0.1_${{ inputs.model }}/${{ inputs.model }}-py${{ inputs.python_version }}.tar
+          path: benchmarks/matbench_v0.1_${{ inputs.model }}/$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]').tar
           if-no-files-found: error
+
