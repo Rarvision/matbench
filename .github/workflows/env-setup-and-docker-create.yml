@@ -70,7 +70,7 @@ jobs:
             eval "${{ inputs.custom_pip_lines }}"
             exit 0
           else
-            PACKAGES=$(python -c "import json,collections.abc as c; d=json.load(open('info.json')); f=lambda x:[x] if isinstance(x,str) else sum((f(i) for i in x),[]) if isinstance(x,c.Sequence) and not isinstance(x,(str,bytes)) else sum((f(v) for v in x.values()),[]) if isinstance(x,dict) else []; seen=set(); out=[]; [out.append(s) or seen.add(s) for s in (t.strip() for t in f(d.get(\"requirements\",{}).get(\"python\",[]))) if s and s not in seen]; print(' '.join(out))")
+            PACKAGES=$(python -c "import json,collections.abc as c; d=json.load(open('info.json')); f=lambda x:[x] if isinstance(x,str) else sum((f(i) for i in x),[]) if isinstance(x,c.Sequence) and not isinstance(x,(str,bytes)) else sum((f(v) for v in x.values()),[]) if isinstance(x,dict) else []; seen=set(); out=[]; [out.append(s) or seen.add(s) for s in (t.strip() for t in f(d.get('requirements',{}).get('python',[]))) if s and s not in seen]; print(' '.join(out))")
             if [ ! -z "$PACKAGES" ]; then
               PACKAGES_CONDA=${PACKAGES//==/=}
               pip install $PACKAGES || conda install $PACKAGES_CONDA -c conda-forge -c pytorch -c pyg -y
@@ -192,21 +192,18 @@ jobs:
 
           sed -i "s/\${MODEL_NAME}/${MODEL}/g" Dockerfile
 
-      - name: Build Docker image
+      - name: Build Docker image tar with buildx
         run: |
           set -Eeuo pipefail
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
-          IMAGE_TAG=$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          docker build -t "$IMAGE_TAG" .
 
-      - name: Save Docker image to tar
-        run: |
-          set -Eeuo pipefail
-          cd benchmarks/matbench_v0.1_${{ inputs.model }}
-          IMAGE_TAG=${IMAGE_TAG:-$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')}
+          IMAGE_TAG=$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')
           OUT="${IMAGE_TAG}.tar"
-          docker save "$IMAGE_TAG" -o "$OUT"
+
+          docker buildx create --use --name buildx-builder || docker buildx use buildx-builder
+          docker buildx build --progress plain -t "$IMAGE_TAG" --output type=docker,dest="$OUT" .
+
+          echo "IMAGE_TAR=$OUT" >> $GITHUB_ENV
           ls -lh "$OUT"
 
       - name: Upload Docker image artifact
