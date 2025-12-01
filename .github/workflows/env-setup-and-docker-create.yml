@@ -73,10 +73,12 @@ jobs:
             eval "${{ inputs.custom_pip_lines }}"
             exit 0
           else
-            PACKAGES=$(python -c "import json;d=json.load(open('info.json'));f=lambda x:[x] if isinstance(x,str) else [y for i in x for y in f(i)] if isinstance(x,(list,tuple)) else [y for v in x.values() for y in f(v)] if isinstance(x,dict) else [];seen=set();out=[];[out.append(s) or seen.add(s) for s in (t.strip() for t in f(d.get('requirements',{}).get('python',[]))) if s and s not in seen];print(' '.join(out))")
+            PACKAGES=$(python -c "import json, pathlib; d=json.load(open('info.json')); f=lambda x:[x] if isinstance(x,str) else [y for i in x for y in f(i)] if isinstance(x,(list,tuple)) else [y for v in x.values() for y in f(v)] if isinstance(x,dict) else []; seen=set(); out=[]; [out.append(s) or seen.add(s) for s in (t.strip() for t in f(d.get('requirements',{}).get('python',[]))) if s and s not in seen]; print(' '.join(out))")
             echo "PACKAGES: $PACKAGES"
-            PACKAGES_CONDA=${PACKAGES//==/=}
-            pip install $PACKAGES || conda install $PACKAGES_CONDA -c conda-forge -c pytorch -c pyg -y
+            if [ ! -z "$PACKAGES" ]; then
+              PACKAGES_CONDA=${PACKAGES//==/=}
+              pip install $PACKAGES || conda install $PACKAGES_CONDA -c conda-forge -c pytorch -c pyg -y
+            fi
           fi
 
       - name: Install matbench
@@ -98,9 +100,13 @@ jobs:
         run: |
           set -Eeuo pipefail
           eval "$(conda shell.bash hook)"
-          cd benchmarks/matbench_v0.1_${{ inputs.model }}
 
-          conda activate "${{ inputs.model }}"
+          MODEL="${{ inputs.model }}"
+          PYVER="${{ inputs.python_version }}"
+          ROOT_DIR="${GITHUB_WORKSPACE}"
+
+          cd benchmarks/matbench_v0.1_${MODEL}
+          conda activate "${MODEL}"
 
           if ! python -c "import nbconvert, jupyter_core" >/dev/null 2>&1; then
             conda install -y nbconvert jupyter-core || python -m pip install -U nbconvert jupyter
@@ -114,58 +120,75 @@ jobs:
           python -c "import ast,pathlib; m=set(); [m.add(a.name.split('.')[0]) for p in pathlib.Path('.').glob('*.py') if p.name!='imports_only.py' for node in ast.walk(ast.parse(p.read_text(encoding='utf-8',errors='ignore'),filename=str(p))) if isinstance(node,ast.Import) for a in node.names]; [m.add(node.module.split('.')[0]) for p in pathlib.Path('.').glob('*.py') if p.name!='imports_only.py' for node in ast.walk(ast.parse(p.read_text(encoding='utf-8',errors='ignore'),filename=str(p))) if isinstance(node,ast.ImportFrom) and node.level==0 and node.module]; open('imports_only.py','w',encoding='utf-8').write(''.join(f'import {x}\n' for x in sorted(filter(None,m))))"
           python imports_only.py
 
-          OUT="${{ inputs.model }}-${{ inputs.python_version }}.yml"
-          conda env export -n "${{ inputs.model }}" --no-builds | sed '/^prefix: /d' > "$OUT"
-          echo "Exported env: $OUT"
+          OUT="${MODEL}-${PYVER}.yml"
+          conda env export -n "${MODEL}" --no-builds | sed '/^prefix: /d' > "$OUT"
+          echo "Exported env (local): $OUT"
           ls -lh "$OUT"
 
           pip install conda-pack
-          PACKED="${{ inputs.model }}-env.tar.gz"
-          conda-pack -n "${{ inputs.model }}" -o "$PACKED"
-          echo "Packed env: $PACKED"
+          PACKED="${MODEL}-env.tar.gz"
+          conda-pack -n "${MODEL}" -o "$PACKED"
+          echo "Packed env (local): $PACKED"
           ls -lh "$PACKED"
+
+          # 移到仓库根目录，方便 artifact 和后续 job 使用
+          mv "$OUT" "${ROOT_DIR}/$OUT"
+          mv "$PACKED" "${ROOT_DIR}/$PACKED"
+
+          echo "Files at repo root after move:"
+          cd "${ROOT_DIR}"
+          ls -lh
 
       - name: Upload env artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.model }}-${{ inputs.python_version }}-env
           path: |
-            benchmarks/matbench_v0.1_${{ inputs.model }}/${{ inputs.model }}-${{ inputs.python_version }}.yml
-            benchmarks/matbench_v0.1_${{ inputs.model }}/${{ inputs.model }}-env.tar.gz
+            ${{ inputs.model }}-${{ inputs.python_version }}.yml
+            ${{ inputs.model }}-env.tar.gz
           if-no-files-found: error
 
   build-docker:
     runs-on: ubuntu-latest
     needs: build-env
-  
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-  
+
       - name: Download env artifacts
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.model }}-${{ inputs.python_version }}-env
           path: .
-  
+
+      - name: Show downloaded files
+        run: |
+          echo "Files at repo root after download:"
+          ls -lh
+
       - name: Prepare Docker context
         run: |
           set -Eeuo pipefail
-  
-          # 切换到 model 对应的目录
-          cd benchmarks/matbench_v0.1_${{ inputs.model }}
-  
-          # 确保 env.tar.gz 文件存在
-          if [ ! -f "${{ inputs.model }}-env.tar.gz" ]; then
-            echo "❌ ERROR: env.tar.gz not found:"
-            echo "Expected: benchmarks/matbench_v0.1_${{ inputs.model }}/${{ inputs.model }}-env.tar.gz"
-            echo "Files in this directory:"
-            ls -lh .
+
+          MODEL="${{ inputs.model }}"
+          PYVER="${{ inputs.python_version }}"
+
+          ENV_TAR="${MODEL}-env.tar.gz"
+
+          if [ ! -f "$ENV_TAR" ]; then
+            echo "❌ ERROR: $ENV_TAR not found at repo root."
+            echo "Current directory:"
+            pwd
+            echo "Files:"
+            ls -lh
             exit 1
           fi
-  
-          cp "${{ inputs.model }}-env.tar.gz" env.tar.gz
-  
+
+          cd benchmarks/matbench_v0.1_${MODEL}
+
+          cp "../../$ENV_TAR" env.tar.gz
+
           cat > Dockerfile << 'EOF'
           FROM continuumio/miniconda3
           WORKDIR /workspace
@@ -178,26 +201,29 @@ jobs:
           ENV PATH=/opt/conda/envs/${MODEL_NAME}/bin:$PATH
           CMD ["bash"]
           EOF
-  
-          sed -i "s/\${MODEL_NAME}/${{ inputs.model }}/g" Dockerfile
-  
+
+          sed -i "s/\${MODEL_NAME}/${MODEL}/g" Dockerfile
+
       - name: Build Docker image
         run: |
           set -Eeuo pipefail
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
+
           IMAGE_TAG=$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           docker build -t "$IMAGE_TAG" .
-  
+
       - name: Save Docker image to tar
         run: |
           set -Eeuo pipefail
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
+
           IMAGE_TAG=${IMAGE_TAG:-$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')}
           OUT="${IMAGE_TAG}.tar"
+
           docker save "$IMAGE_TAG" -o "$OUT"
           ls -lh "$OUT"
-  
+
       - name: Upload Docker image artifact
         uses: actions/upload-artifact@v4
         with:
