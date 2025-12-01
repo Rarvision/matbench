@@ -137,64 +137,67 @@ jobs:
   build-docker:
     runs-on: ubuntu-latest
     needs: build-env
-
+  
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
+  
       - name: Download env artifacts
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.model }}-${{ inputs.python_version }}-env
           path: .
-
+  
       - name: Prepare Docker context
         run: |
           set -Eeuo pipefail
+  
+          # 切换到 model 对应的目录
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
-
+  
+          # 确保 env.tar.gz 文件存在
+          if [ ! -f "${{ inputs.model }}-env.tar.gz" ]; then
+            echo "❌ ERROR: env.tar.gz not found:"
+            echo "Expected: benchmarks/matbench_v0.1_${{ inputs.model }}/${{ inputs.model }}-env.tar.gz"
+            echo "Files in this directory:"
+            ls -lh .
+            exit 1
+          fi
+  
           cp "${{ inputs.model }}-env.tar.gz" env.tar.gz
-
+  
           cat > Dockerfile << 'EOF'
           FROM continuumio/miniconda3
-
           WORKDIR /workspace
-
           COPY env.tar.gz /tmp/env.tar.gz
           COPY . /workspace
-
           RUN mkdir -p /opt/conda/envs/${MODEL_NAME} \
               && tar -xzf /tmp/env.tar.gz -C /opt/conda/envs/${MODEL_NAME} \
               && /opt/conda/envs/${MODEL_NAME}/bin/conda-unpack \
               && rm /tmp/env.tar.gz
-
           ENV PATH=/opt/conda/envs/${MODEL_NAME}/bin:$PATH
-
           CMD ["bash"]
           EOF
-
+  
           sed -i "s/\${MODEL_NAME}/${{ inputs.model }}/g" Dockerfile
-
+  
       - name: Build Docker image
         run: |
           set -Eeuo pipefail
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
-
           IMAGE_TAG=$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           docker build -t "$IMAGE_TAG" .
-
+  
       - name: Save Docker image to tar
         run: |
           set -Eeuo pipefail
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
-
           IMAGE_TAG=${IMAGE_TAG:-$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')}
           OUT="${IMAGE_TAG}.tar"
-
           docker save "$IMAGE_TAG" -o "$OUT"
           ls -lh "$OUT"
-
+  
       - name: Upload Docker image artifact
         uses: actions/upload-artifact@v4
         with:
