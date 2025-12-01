@@ -56,7 +56,6 @@ jobs:
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
 
           if [ ! -z "${{ inputs.conda_env_file }}" ] && [ -f "${{ inputs.conda_env_file }}" ]; then
-            echo "Creating env from YAML: ${{ inputs.conda_env_file }}"
             conda env create --name ${{ inputs.model }} --file ${{ inputs.conda_env_file }}
             exit 0
           fi
@@ -65,16 +64,13 @@ jobs:
           conda activate ${{ inputs.model }}
 
           if [ ! -z "${{ inputs.pip_requirements_file }}" ] && [ -f "${{ inputs.pip_requirements_file }}" ]; then
-            echo "Installing pip deps from: ${{ inputs.pip_requirements_file }}"
             pip install -r ${{ inputs.pip_requirements_file }}
             exit 0
           elif [ ! -z "${{ inputs.custom_pip_lines }}" ]; then
-            echo "Installing custom pip deps: ${{ inputs.custom_pip_lines }}"
             eval "${{ inputs.custom_pip_lines }}"
             exit 0
           else
-            PACKAGES=$(python -c "import json, pathlib; d=json.load(open('info.json')); f=lambda x:[x] if isinstance(x,str) else [y for i in x for y in f(i)] if isinstance(x,(list,tuple)) else [y for v in x.values() for y in f(v)] if isinstance(x,dict) else []; seen=set(); out=[]; [out.append(s) or seen.add(s) for s in (t.strip() for t in f(d.get('requirements',{}).get('python',[]))) if s and s not in seen]; print(' '.join(out))")
-            echo "PACKAGES: $PACKAGES"
+            PACKAGES=$(python -c "import json,collections.abc as c; d=json.load(open('info.json')); f=lambda x:[x] if isinstance(x,str) else sum((f(i) for i in x),[]) if isinstance(x,c.Sequence) and not isinstance(x,(str,bytes)) else sum((f(v) for v in x.values()),[]) if isinstance(x,dict) else []; seen=set(); out=[]; [out.append(s) or seen.add(s) for s in (t.strip() for t in f(d.get(\"requirements\",{}).get(\"python\",[]))) if s and s not in seen]; print(' '.join(out))")
             if [ ! -z "$PACKAGES" ]; then
               PACKAGES_CONDA=${PACKAGES//==/=}
               pip install $PACKAGES || conda install $PACKAGES_CONDA -c conda-forge -c pytorch -c pyg -y
@@ -89,7 +85,6 @@ jobs:
 
           conda activate ${{ inputs.model }}
           if python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('matbench') else 1)"; then
-            echo "matbench already installed"
             exit 0
           else
             pip install matbench
@@ -122,22 +117,14 @@ jobs:
 
           OUT="${MODEL}-${PYVER}.yml"
           conda env export -n "${MODEL}" --no-builds | sed '/^prefix: /d' > "$OUT"
-          echo "Exported env (local): $OUT"
-          ls -lh "$OUT"
 
+          conda clean -a -y || true
           pip install conda-pack
           PACKED="${MODEL}-env.tar.gz"
           conda-pack -n "${MODEL}" -o "$PACKED"
-          echo "Packed env (local): $PACKED"
-          ls -lh "$PACKED"
 
-          # 移到仓库根目录，方便 artifact 和后续 job 使用
           mv "$OUT" "${ROOT_DIR}/$OUT"
           mv "$PACKED" "${ROOT_DIR}/$PACKED"
-
-          echo "Files at repo root after move:"
-          cd "${ROOT_DIR}"
-          ls -lh
 
       - name: Upload env artifacts
         uses: actions/upload-artifact@v4
@@ -162,31 +149,32 @@ jobs:
           name: ${{ inputs.model }}-${{ inputs.python_version }}-env
           path: .
 
-      - name: Show downloaded files
+      - name: Free disk space on runner
         run: |
-          echo "Files at repo root after download:"
-          ls -lh
+          set -Eeuo pipefail
+          df -h
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache || true
+          docker system prune -af || true
+          df -h
 
       - name: Prepare Docker context
         run: |
           set -Eeuo pipefail
 
           MODEL="${{ inputs.model }}"
-          PYVER="${{ inputs.python_version }}"
-
           ENV_TAR="${MODEL}-env.tar.gz"
 
           if [ ! -f "$ENV_TAR" ]; then
-            echo "❌ ERROR: $ENV_TAR not found at repo root."
-            echo "Current directory:"
+            echo "env tar not found at repo root: $ENV_TAR"
             pwd
-            echo "Files:"
             ls -lh
             exit 1
           fi
 
           cd benchmarks/matbench_v0.1_${MODEL}
-
           cp "../../$ENV_TAR" env.tar.gz
 
           cat > Dockerfile << 'EOF'
@@ -208,7 +196,6 @@ jobs:
         run: |
           set -Eeuo pipefail
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
-
           IMAGE_TAG=$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           docker build -t "$IMAGE_TAG" .
@@ -217,10 +204,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           cd benchmarks/matbench_v0.1_${{ inputs.model }}
-
           IMAGE_TAG=${IMAGE_TAG:-$(echo "${{ inputs.model }}-py${{ inputs.python_version }}" | tr '[:upper:]' '[:lower:]')}
           OUT="${IMAGE_TAG}.tar"
-
           docker save "$IMAGE_TAG" -o "$OUT"
           ls -lh "$OUT"
 
